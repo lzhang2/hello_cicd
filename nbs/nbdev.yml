@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "hello_cicd"
+  site-url: "https://lzhang2.github.io/hello_cicd"
+  description: "ci/cd hello world"
+  repo-branch: main
+  repo-url: "https://github.com/lzhang2/hello_cicd"
