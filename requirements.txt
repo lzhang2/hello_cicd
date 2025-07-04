@@ -1,0 +1,18 @@
+# Core dependencies
+fastcore>=1.5.0
+nbdev>=2.3.0
+
+# Optional: Example of private packages from Google Cloud Artifact Registry
+# Replace these with your actual private package names
+# your-private-package==1.0.0
+# your-company-utils>=2.1.0
+
+# Development and build dependencies
+build>=0.8.0
+twine>=4.0.0
+keyring>=23.0.0
+keyrings.google-artifactregistry-auth>=1.1.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0

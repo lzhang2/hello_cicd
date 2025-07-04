@@ -1,0 +1,196 @@
+name: CI/CD with Google Cloud Artifact Registry
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  # Google Cloud configuration
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ secrets.GCP_REGION }}
+  GAR_REPOSITORY: ${{ secrets.GAR_REPOSITORY }}
+  PYTHON_VERSION: "3.9"
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    
+    # Required for Workload Identity Federation
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    # Method 1: Workload Identity Federation (Recommended)
+    - name: Authenticate to Google Cloud using WIF
+      id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        # Workload Identity Provider (configured in GCP)
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        # Service Account email
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+        
+    # Alternative Method 2: Service Account Key (Less secure, but simpler)
+    # Uncomment this block and comment out the WIF block above if you prefer SA key auth
+    # - name: Authenticate to Google Cloud using SA Key
+    #   uses: google-github-actions/auth@v2
+    #   with:
+    #     credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker for Artifact Registry
+      run: |
+        gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+
+    - name: Configure pip for Artifact Registry
+      run: |
+        # Configure pip to use Google Cloud Artifact Registry
+        pip config set global.index-url https://oauth2accesstoken:$(gcloud auth print-access-token)@${{ env.GCP_REGION }}-python.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/simple/
+        pip config set global.extra-index-url https://pypi.org/simple/
+        
+        # Alternative: Create pip.conf for more persistent configuration
+        mkdir -p ~/.pip
+        cat > ~/.pip/pip.conf << EOF
+        [global]
+        index-url = https://oauth2accesstoken:$(gcloud auth print-access-token)@${{ env.GCP_REGION }}-python.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/simple/
+        extra-index-url = https://pypi.org/simple/
+        EOF
+
+    - name: Install dependencies from Artifact Registry
+      run: |
+        # Upgrade pip and install build tools
+        python -m pip install --upgrade pip setuptools wheel
+        
+        # Install your private packages from Google Cloud Artifact Registry
+        # Example: Replace 'your-private-package' with actual package names
+        # pip install your-private-package==1.0.0
+        
+        # Install standard dependencies
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        fi
+        
+        # Install development dependencies
+        pip install twine keyring keyrings.google-artifactregistry-auth
+
+    - name: Install project in development mode
+      run: |
+        pip install -e ".[dev]"
+
+    - name: Run tests
+      run: |
+        # Using nbdev's testing framework
+        nbdev_test
+
+    - name: Build package
+      run: |
+        # Build the package
+        python -m build
+
+    - name: Verify package can be installed
+      run: |
+        # Test installation in a clean environment
+        pip install dist/*.whl
+
+  publish-to-artifact-registry:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Authenticate to Google Cloud using WIF
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Install publishing dependencies
+      run: |
+        python -m pip install --upgrade pip build twine
+        pip install keyrings.google-artifactregistry-auth
+
+    - name: Build package
+      run: |
+        python -m build
+
+    - name: Configure twine for Artifact Registry
+      run: |
+        # Configure twine to use Google Cloud Artifact Registry
+        export TWINE_USERNAME=oauth2accesstoken
+        export TWINE_PASSWORD=$(gcloud auth print-access-token)
+        export TWINE_REPOSITORY_URL=https://${{ env.GCP_REGION }}-python.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/
+
+    - name: Publish package to Artifact Registry
+      env:
+        TWINE_USERNAME: oauth2accesstoken
+        TWINE_PASSWORD: ${{ steps.auth.outputs.access_token }}
+        TWINE_REPOSITORY_URL: https://${{ env.GCP_REGION }}-python.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/
+      run: |
+        # Upload to Google Cloud Artifact Registry
+        twine upload dist/*
+
+  # Optional: Docker build and push to Artifact Registry
+  docker-build-push:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud using WIF
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker for Artifact Registry
+      run: |
+        gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+
+    - name: Build and push Docker image
+      run: |
+        # Build Docker image
+        docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/hello-cicd:${{ github.sha }} .
+        docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/hello-cicd:latest .
+        
+        # Push to Artifact Registry
+        docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/hello-cicd:${{ github.sha }}
+        docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/hello-cicd:latest
